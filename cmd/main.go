@@ -1,58 +1,96 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
 	"net/http"
+	"net/http/pprof"
 	"os"
-	"strconv"
-
-	"github.com/gin-gonic/gin"
+	"runtime"
+	"sync"
+	"time"
 )
 
-type message struct {
-	Message string `json:"message"`
-	ID      int    `json:"id"`
+type paymentResp struct {
+	CorrelationID string  `json:"correlationId"`
+	Amount        float64 `json:"amount"`
 }
 
-var messages = map[int]message{
-	1: {Message: "Hello World", ID: 1},
-	2: {Message: "Bye World", ID: 2},
+var paymentPool = sync.Pool{
+	New: func() any {
+		return &paymentResp{}
+	},
 }
 
-func getMessages(c *gin.Context) {
-	c.IndentedJSON(http.StatusOK, messages)
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		return &bytes.Buffer{}
+	},
 }
 
-func getMessageID(c *gin.Context) {
-	idStr := c.Param("id")
-	id, err := strconv.Atoi(idStr)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid ID"})
+func paymentEndpoint(w http.ResponseWriter, r *http.Request) {
+
+	defer r.Body.Close()
+
+	paymentBuf := paymentPool.Get().(*paymentResp)
+	reqBuf := bufferPool.Get().(*bytes.Buffer)
+
+	defer func() {
+		reqBuf.Reset()
+		bufferPool.Put(reqBuf)
+		*paymentBuf = paymentResp{}
+		paymentPool.Put(paymentBuf)
+	}()
+
+	if _, err := io.Copy(reqBuf, r.Body); err != nil {
+		http.Error(w, "Erro ao ler body", http.StatusBadRequest)
 		return
 	}
-	lookup, ok := messages[id]
-	if !ok {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Message not found"})
+
+	if err := json.Unmarshal(reqBuf.Bytes(), paymentBuf); err != nil {
+		http.Error(w, "JSON Inválido", http.StatusBadRequest)
 		return
 	}
 
-	c.IndentedJSON(http.StatusOK, lookup)
+	w.WriteHeader(http.StatusOK)
+	w.Write(reqBuf.Bytes())
+
 }
 
-func returnID(id string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"id": id,
-		})
-	}
+func registerPprof(mux *http.ServeMux) {
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 }
 
 func main() {
-	apiId := os.Getenv("API_ID")
-	port := os.Getenv("PORT")
-	router := gin.Default()
-	router.GET("/messages", getMessages)
-	router.GET("/messages/:id", getMessageID)
-	router.GET("/api", returnID(apiId))
+	if runtime.NumCPU()*4 > 32 {
+		runtime.GOMAXPROCS(32)
+	} else {
+		runtime.GOMAXPROCS(runtime.NumCPU() * 4)
+	}
 
-	router.Run(":" + port)
+	port := os.Getenv("PORT")
+
+	router := http.NewServeMux()
+
+	registerPprof(router)
+
+	router.HandleFunc("/payments", paymentEndpoint)
+
+	server := &http.Server{
+		Addr:         ":" + port,
+		Handler:      router,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	fmt.Println("Iniciando o Server")
+	log.Fatal(server.ListenAndServe())
 }
