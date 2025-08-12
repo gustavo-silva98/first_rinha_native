@@ -5,11 +5,11 @@ WORKDIR /app
 COPY ../go.mod ../go.sum ./
 RUN go mod download
 
-COPY ./cmd/*.go ./
+COPY ./cmd/api/*.go ./
 
 RUN ls
 
-RUN CGO_ENABLED=0 GOOS=linux go build -o app .
+RUN CGO_ENABLED=0 GOOS=linux go build -o api .
 
-CMD [ "./app" ]
+CMD [ "./api" ]
 

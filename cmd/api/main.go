@@ -26,6 +26,7 @@ type Backend struct {
 type paymentResp struct {
 	CorrelationID string  `json:"correlationId"`
 	Amount        float64 `json:"amount"`
+	RequestDate   string  `json:"requestedAt,omitempty"`
 }
 
 type totalPayment struct {
@@ -51,11 +52,12 @@ var bufferPool = sync.Pool{
 }
 
 func (api *Backend) paymentEndpoint(w http.ResponseWriter, r *http.Request) {
-
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
+
+	dateRequest := time.Now().Format(time.RFC3339)
 
 	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
 	defer r.Body.Close()
@@ -80,12 +82,21 @@ func (api *Backend) paymentEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	err := api.redisClient.RPush(r.Context(), "payment-queue", reqBuf.Bytes()).Err()
+	paymentBuf.RequestDate = dateRequest
+
+	paymentJson, err := json.Marshal(paymentBuf)
 	if err != nil {
-		http.Error(w, "Erro ao enfileirar payment", http.StatusInternalServerError)
+		http.Error(w, "Erro ao serializar o Json para colocar no Redis", http.StatusInternalServerError)
+		return
 	}
 
-	w.WriteHeader(http.StatusAccepted)
+	err = api.redisClient.RPush(r.Context(), "payment-queue", paymentJson).Err()
+	if err != nil {
+		http.Error(w, "Erro ao enfileirar payment", http.StatusInternalServerError)
+		return
+	} else {
+		fmt.Println("Payment enfileirado.")
+	}
 
 }
 
