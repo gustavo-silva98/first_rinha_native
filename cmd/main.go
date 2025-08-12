@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,11 +13,29 @@ import (
 	"runtime"
 	"sync"
 	"time"
+
+	"github.com/redis/go-redis/v9"
 )
+
+var ctx = context.Background()
+
+type Backend struct {
+	redisClient *redis.Client
+}
 
 type paymentResp struct {
 	CorrelationID string  `json:"correlationId"`
 	Amount        float64 `json:"amount"`
+}
+
+type totalPayment struct {
+	Requests int     `json:"totalRequests"`
+	Amount   float64 `json:"totalAmount"`
+}
+
+type paymentSummary struct {
+	Default  totalPayment `json:"default"`
+	Fallback totalPayment `json:"fallback"`
 }
 
 var paymentPool = sync.Pool{
@@ -31,8 +50,14 @@ var bufferPool = sync.Pool{
 	},
 }
 
-func paymentEndpoint(w http.ResponseWriter, r *http.Request) {
+func (api *Backend) paymentEndpoint(w http.ResponseWriter, r *http.Request) {
 
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
 	defer r.Body.Close()
 
 	paymentBuf := paymentPool.Get().(*paymentResp)
@@ -55,9 +80,74 @@ func paymentEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	w.Write(reqBuf.Bytes())
+	err := api.redisClient.RPush(r.Context(), "payment-queue", reqBuf.Bytes()).Err()
+	if err != nil {
+		http.Error(w, "Erro ao enfileirar payment", http.StatusInternalServerError)
+	}
 
+	w.WriteHeader(http.StatusAccepted)
+
+}
+
+func paymentSummaryEndpoint(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	}
+
+	defaultSummary := totalPayment{
+		Requests: 1,
+		Amount:   2.0,
+	}
+	jsonSummary := paymentSummary{
+		Default:  defaultSummary,
+		Fallback: defaultSummary,
+	}
+
+	if err := json.NewEncoder(w).Encode(jsonSummary); err != nil {
+		http.Error(w, "Erro ao renderizar json", http.StatusInternalServerError)
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
+func (api *Backend) readRedisList(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("Lendo dados da lista Redis")
+	items, err := api.redisClient.LRange(ctx, "payment-queue", 0, -1).Result()
+	if err != nil {
+		http.Error(w, "Erro ao ler itens da fila", http.StatusInternalServerError)
+		return
+	}
+
+	var paymentsRedis []paymentResp
+	var countValue float64
+
+	for _, itemStr := range items {
+		var p paymentResp
+		if err := json.Unmarshal([]byte(itemStr), &p); err != nil {
+			log.Printf("Erro ao fazer unmarshal : %v ", err)
+			continue
+		}
+		countValue += p.Amount
+		paymentsRedis = append(paymentsRedis, p)
+	}
+
+	log.Printf("Soma das transações é: %v ", countValue)
+	if err := json.NewEncoder(w).Encode(paymentsRedis); err != nil {
+		http.Error(w, "Erro ao gerar json final", http.StatusInternalServerError)
+	}
+}
+
+func pingRedis(rdb *redis.Client) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.Background()
+
+		pong, err := rdb.Ping(ctx).Result()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(pong)
+	}
 }
 
 func registerPprof(mux *http.ServeMux) {
@@ -77,11 +167,30 @@ func main() {
 
 	port := os.Getenv("PORT")
 
+	client := redis.NewClient(&redis.Options{
+		Addr:     "redis-rinha:6379",
+		Password: "",
+		DB:       0,
+		Protocol: 2,
+	})
+
 	router := http.NewServeMux()
 
 	registerPprof(router)
 
-	router.HandleFunc("/payments", paymentEndpoint)
+	api := &Backend{
+		redisClient: client,
+	}
+
+	err := api.redisClient.Del(ctx, "payment-queue").Err()
+	if err != nil {
+		panic(err)
+	}
+
+	router.HandleFunc("/read-redis", api.readRedisList)
+	router.HandleFunc("/payments", api.paymentEndpoint)
+	router.HandleFunc("/payments-summary", paymentSummaryEndpoint)
+	router.HandleFunc("/ping-redis", pingRedis(client))
 
 	server := &http.Server{
 		Addr:         ":" + port,
