@@ -148,6 +148,18 @@ func (api *Backend) readRedisList(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (api *Backend) readResultRedis(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("Lendo dados de resultado no Redis")
+	result, _ := api.redisClient.ZRevRangeByScore(ctx, "payment-result-default", &redis.ZRangeBy{
+		Min: "-Inf",
+		Max: "+Inf",
+	}).Result()
+
+	if err := json.NewEncoder(w).Encode(result); err != nil {
+		http.Error(w, "Erro ao gerar json final", http.StatusInternalServerError)
+	}
+}
+
 func pingRedis(rdb *redis.Client) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.Background()
@@ -202,6 +214,7 @@ func main() {
 	router.HandleFunc("/payments", api.paymentEndpoint)
 	router.HandleFunc("/payments-summary", paymentSummaryEndpoint)
 	router.HandleFunc("/ping-redis", pingRedis(client))
+	router.HandleFunc("/result", api.readResultRedis)
 
 	server := &http.Server{
 		Addr:         ":" + port,
