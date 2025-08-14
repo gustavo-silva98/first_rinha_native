@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"firstApi/internal/constants"
+	"firstApi/internal/healthcheck"
 	"fmt"
 	"log"
 	"time"
@@ -17,8 +19,6 @@ type Worker struct {
 	queueNameRetry       string
 	queueNameOutDefault  string
 	queueNameOutFallback string
-	PaymentDefaultURL    string
-	PaymentFallbackURL   string
 }
 
 type paymentResp struct {
@@ -82,15 +82,24 @@ func main() {
 		workerObj := &Worker{
 			Id:                   i,
 			redisClient:          client,
-			queueNameIN:          "payment-queue",
-			queueNameRetry:       "payment-retry-queue",
-			queueNameOutDefault:  "payment-result-default",
-			queueNameOutFallback: "payment-result-fallback",
+			queueNameIN:          constants.QueueNameIN,
+			queueNameRetry:       constants.QueueNameRetry,
+			queueNameOutDefault:  constants.QueueNameOutDefault,
+			queueNameOutFallback: constants.QueueNameOutFallback,
 		}
 		fmt.Printf("Lançado Worker %v ", workerObj.Id)
 		go workerObj.WorkerLaunch()
 
 	}
+
+	healthcheck := &healthcheck.HealthChecker{
+		CacheKey:           constants.CacheKey,
+		PaymentDefaultURL:  constants.PaymentDefaultURL,
+		PaymentFallbackURL: constants.PaymentFallbackURL,
+		UpdateFreq:         constants.UpdateFreq,
+		TTL:                constants.TTL,
+	}
+	go healthcheck.StartHealthChecker()
 
 	select {}
 }
