@@ -10,6 +10,6 @@ const (
 	PaymentDefaultURL    string        = "http://payment-processor-default:8080"
 	PaymentFallbackURL   string        = "http://payment-processor-fallback:8080"
 	CacheKey             string        = "BestInstance"
-	UpdateFreq           time.Duration = 5 * time.Second
-	TTL                  time.Duration = 5 * time.Second
+	UpdateFreq           time.Duration = 5
+	TTL                  time.Duration = 5
 )

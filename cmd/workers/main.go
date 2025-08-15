@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"firstApi/internal/constants"
@@ -8,6 +9,7 @@ import (
 	"firstApi/internal/repository"
 	"fmt"
 	"log"
+	"net/http"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -15,11 +17,14 @@ import (
 
 type Worker struct {
 	Id                   int
-	redisClient          *redis.Client
+	redisClient          *repository.RedisClient
 	queueNameIN          string
 	queueNameRetry       string
 	queueNameOutDefault  string
 	queueNameOutFallback string
+	CacheKey             string
+	PaymentDefaultURL    string
+	PaymentFallbackURL   string
 }
 
 type paymentResp struct {
@@ -32,7 +37,7 @@ var ctx context.Context = context.Background()
 
 func (wrk *Worker) WorkerLaunch() {
 	for {
-		result, err := wrk.redisClient.BLPop(ctx, 1*time.Second, wrk.queueNameIN, wrk.queueNameRetry).Result()
+		result, err := wrk.redisClient.Client.BLPop(ctx, 1*time.Second, wrk.queueNameIN, wrk.queueNameRetry).Result()
 		if err == redis.Nil {
 			continue
 		}
@@ -61,32 +66,60 @@ func (wrk *Worker) processPayment(job paymentResp) {
 		score_unix := score.Unix()
 		jobJson, _ := json.Marshal(job)
 
-		// Tooooda a logica de consultar status e fazer a request pra pagamento aqui
+		urlOk, err := wrk.redisClient.Client.Get(ctx, wrk.CacheKey).Result()
+		if err != nil {
+			fmt.Println("Erro ao ler instancia correta pra subir payment. ", err)
+			return
+		}
+		fmt.Printf("Lido URL Redis: %v\n", urlOk)
+		if postPayment := wrk.paymentPost(urlOk, jobJson); postPayment {
+			if urlOk == wrk.PaymentDefaultURL {
+				wrk.redisClient.Client.ZAdd(ctx, wrk.queueNameOutDefault, redis.Z{Score: float64(score_unix), Member: jobJson})
+				fmt.Printf("Colocado no HSET %v\n ", wrk.queueNameOutDefault)
+				fmt.Printf("Job processado. ID: %v - CorrId: %v | ReqAt: %v | Amount: %v", wrk.Id, job.CorrelationID, job.RequestDate, job.Amount)
+			} else {
+				wrk.redisClient.Client.ZAdd(ctx, wrk.queueNameOutFallback, redis.Z{Score: float64(score_unix), Member: jobJson})
+				fmt.Printf("Colocado no HSET %v\n ", wrk.queueNameOutFallback)
+				fmt.Printf("Job processado. ID: %v - CorrId: %v | ReqAt: %v | Amount: %v", wrk.Id, job.CorrelationID, job.RequestDate, job.Amount)
+			}
+		}
 
-		wrk.redisClient.ZAdd(ctx, wrk.queueNameOutDefault, redis.Z{Score: float64(score_unix), Member: jobJson})
+		// Tooooda a logica de consultar status e fazer a request pra pagamento aqui
 	}
 
 	fmt.Printf("Job processado. ID: %v - CorrId: %v | ReqAt: %v | Amount: %v", wrk.Id, job.CorrelationID, job.RequestDate, job.Amount)
 }
 
+func (wrk *Worker) paymentPost(url string, job []byte) bool {
+	payload := bytes.NewBuffer(job)
+
+	resp, err := http.Post(url+"/payments", "application/json", payload)
+	if err != nil {
+		log.Printf("Falha ao fazer post no endpoint: %v\n", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		fmt.Printf("Falha no Post Payment: %v\n", resp.StatusCode)
+		return false
+	}
+	return true
+}
+
 func main() {
 	fmt.Println("Subindo o Worker ")
-
-	client := redis.NewClient(&redis.Options{
-		Addr:     "redis-rinha:6379",
-		Password: "",
-		DB:       0,
-		Protocol: 2,
-	})
 
 	for i := 0; i < 15; i++ {
 		workerObj := &Worker{
 			Id:                   i,
-			redisClient:          client,
+			redisClient:          repository.RedisClientSingleton,
 			queueNameIN:          constants.QueueNameIN,
 			queueNameRetry:       constants.QueueNameRetry,
 			queueNameOutDefault:  constants.QueueNameOutDefault,
 			queueNameOutFallback: constants.QueueNameOutFallback,
+			CacheKey:             constants.CacheKey,
+			PaymentDefaultURL:    constants.PaymentDefaultURL,
+			PaymentFallbackURL:   constants.PaymentFallbackURL,
 		}
 		fmt.Printf("Lançado Worker %v ", workerObj.Id)
 		go workerObj.WorkerLaunch()
@@ -97,8 +130,8 @@ func main() {
 		CacheKey:           constants.CacheKey,
 		PaymentDefaultURL:  constants.PaymentDefaultURL,
 		PaymentFallbackURL: constants.PaymentFallbackURL,
-		UpdateFreq:         constants.UpdateFreq,
-		TTL:                constants.TTL,
+		UpdateFreq:         constants.UpdateFreq * time.Second,
+		TTL:                constants.TTL * time.Second,
 		RedisClient:        repository.RedisClientSingleton,
 	}
 	go healthcheck.StartHealthChecker()
