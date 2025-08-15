@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"firstApi/internal/constants"
 	"firstApi/internal/healthcheck"
+	"firstApi/internal/repository"
 	"fmt"
 	"log"
 	"time"
@@ -98,6 +99,7 @@ func main() {
 		PaymentFallbackURL: constants.PaymentFallbackURL,
 		UpdateFreq:         constants.UpdateFreq,
 		TTL:                constants.TTL,
+		RedisClient:        repository.RedisClientSingleton,
 	}
 	go healthcheck.StartHealthChecker()
 

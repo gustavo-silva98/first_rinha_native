@@ -1,13 +1,18 @@
 package healthcheck
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"time"
+
+	"firstApi/internal/repository"
 )
+
+var ctx context.Context = context.Background()
 
 type ServiceHealthJSON struct {
 	Failing         bool `json:"failing"`
@@ -15,7 +20,7 @@ type ServiceHealthJSON struct {
 }
 
 type HealthChecker struct {
-	//redisClient        *redis.Client
+	RedisClient        *repository.RedisClient
 	CacheKey           string
 	PaymentDefaultURL  string
 	PaymentFallbackURL string
@@ -85,15 +90,39 @@ func (checker *HealthChecker) getHealthRequest(url string) (ServiceHealthJSON, e
 	return jsonStatusHealth, nil
 }
 
+func (checker *HealthChecker) setCache(url string) {
+
+	for {
+		ok, err := checker.RedisClient.Client.SetNX(ctx, checker.CacheKey+":lock", ":locked", checker.TTL).Result()
+		if err != nil {
+			fmt.Printf("Falha ao pegar o Lock: %v\n", err)
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if ok {
+			break
+		}
+
+		fmt.Println("Lock não disponível")
+		time.Sleep(50 * time.Millisecond)
+	}
+	defer checker.RedisClient.Client.Del(ctx, checker.CacheKey+":lock")
+
+	err := checker.RedisClient.Client.SetEx(ctx, checker.CacheKey, url, checker.TTL).Err()
+	if err != nil {
+		fmt.Printf("Erro ao salvar no Redis: %v\n", err)
+	}
+}
+
 func (checker *HealthChecker) StartHealthChecker() {
-	ticker := time.NewTicker(checker.UpdateFreq * time.Second)
+	ticker := time.NewTicker(checker.UpdateFreq)
 	defer ticker.Stop()
 	for range ticker.C {
 		urlOK, err := checker.CheckHealth()
 		if err != nil {
 			fmt.Printf("Erro ao Checar health %v\n", err)
 		}
-
+		checker.setCache(urlOK)
 		fmt.Printf("Salvando no REDIS a url: %v\n", urlOK)
 	}
 
