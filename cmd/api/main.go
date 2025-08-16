@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"firstApi/internal/constants"
 	"fmt"
 	"io"
 	"log"
@@ -129,11 +130,11 @@ func (api *Backend) readRedisList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var paymentsRedis []paymentResp
+	paymentsRedis := make([]paymentResp, 1000)
 	var countValue float64
-
+	var p paymentResp
 	for _, itemStr := range items {
-		var p paymentResp
+
 		if err := json.Unmarshal([]byte(itemStr), &p); err != nil {
 			log.Printf("Erro ao fazer unmarshal : %v ", err)
 			continue
@@ -148,16 +149,67 @@ func (api *Backend) readRedisList(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (api *Backend) readResultRedis(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("Lendo dados de resultado no Redis")
-	result, _ := api.redisClient.ZRevRangeByScore(ctx, "payment-result-default", &redis.ZRangeBy{
+func (api *Backend) readSingleSortedSet(SetName string) totalPayment {
+	result, err := api.redisClient.ZRevRangeByScore(ctx, SetName, &redis.ZRangeBy{
 		Min: "-Inf",
 		Max: "+Inf",
 	}).Result()
 
-	if err := json.NewEncoder(w).Encode(result); err != nil {
+	if err != nil {
+		fmt.Printf("Falha ao ler resultado da Sorted Set %v\n", err)
+		return totalPayment{}
+	}
+
+	paymentBuf := paymentPool.Get().(*paymentResp)
+	var countValue float64
+
+	defer func() {
+		*paymentBuf = paymentResp{}
+		paymentPool.Put(paymentBuf)
+	}()
+
+	for _, resultStr := range result {
+		if err := json.Unmarshal([]byte(resultStr), &paymentBuf); err != nil {
+			fmt.Printf("Erro ao converter %v\n", err)
+			continue
+		} else {
+			countValue += paymentBuf.Amount
+		}
+	}
+	paymentStruct := totalPayment{
+		Requests: len(result),
+		Amount:   countValue,
+	}
+
+	return paymentStruct
+}
+
+func (api *Backend) readResultRedis(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("Lendo dados de resultado no Redis")
+	resultDefault := api.readSingleSortedSet(constants.QueueNameOutDefault)
+	resultFallback := api.readSingleSortedSet(constants.QueueNameOutFallback)
+
+	summaryFinal := paymentSummary{
+		Default:  resultDefault,
+		Fallback: resultFallback,
+	}
+
+	if err := json.NewEncoder(w).Encode(summaryFinal); err != nil {
 		http.Error(w, "Erro ao gerar json final", http.StatusInternalServerError)
 	}
+}
+
+func (api *Backend) readDLQ(w http.ResponseWriter, r *http.Request) {
+	result, err := api.redisClient.ZRevRangeByScore(ctx, constants.DLQ, &redis.ZRangeBy{
+		Min: "-Inf",
+		Max: "+Inf",
+	}).Result()
+
+	if err != nil {
+		fmt.Printf("Falha ao ler resultado da Sorted Set %v\n", err)
+	}
+	json.NewEncoder(w).Encode(result)
+
 }
 
 func pingRedis(rdb *redis.Client) http.HandlerFunc {
@@ -215,6 +267,7 @@ func main() {
 	router.HandleFunc("/payments-summary", paymentSummaryEndpoint)
 	router.HandleFunc("/ping-redis", pingRedis(client))
 	router.HandleFunc("/result", api.readResultRedis)
+	router.HandleFunc("/dlq", api.readDLQ)
 
 	server := &http.Server{
 		Addr:         ":" + port,

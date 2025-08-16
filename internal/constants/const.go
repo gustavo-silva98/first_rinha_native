@@ -3,6 +3,8 @@ package constants
 import "time"
 
 const (
+	DLQ                  string        = "payment-dlq"
+	RetryPayloadHash     string        = "payload-hash"
 	QueueNameIN          string        = "payment-queue"
 	QueueNameRetry       string        = "payment-retry-queue"
 	QueueNameOutDefault  string        = "payment-result-default"
