@@ -10,8 +10,10 @@ import (
 	"log"
 	"net/http"
 	"net/http/pprof"
+	"net/url"
 	"os"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
@@ -58,7 +60,7 @@ func (api *Backend) paymentEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dateRequest := time.Now().Format(time.RFC3339)
+	dateRequest := time.Now().UTC().Format(time.RFC3339)
 
 	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
 	defer r.Body.Close()
@@ -101,29 +103,37 @@ func (api *Backend) paymentEndpoint(w http.ResponseWriter, r *http.Request) {
 
 }
 
-func paymentSummaryEndpoint(w http.ResponseWriter, r *http.Request) {
+func (api *Backend) paymentSummaryEndpoint(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 	}
-
-	defaultSummary := totalPayment{
-		Requests: 1,
-		Amount:   2.0,
+	urlParse, err := url.Parse(r.URL.String())
+	if err != nil {
+		fmt.Println("Erro ao Parsear url ", err)
 	}
-	jsonSummary := paymentSummary{
-		Default:  defaultSummary,
-		Fallback: defaultSummary,
+	from := urlParse.Query().Get("from")
+	to := urlParse.Query().Get("to")
+	fromTimeParsed, _ := time.Parse(time.RFC3339Nano, from)
+	toTimeParsed, _ := time.Parse(time.RFC3339Nano, to)
+	fromTimeUnix := fromTimeParsed.Unix()
+	toTimeUnix := toTimeParsed.Unix()
+	fmt.Println("O FROM é ", from, " UNIX= ", fromTimeUnix)
+	fmt.Println("O To É ", to, "UNIX= ", toTimeUnix)
+
+	resultDefault := api.readSingleSortedSetTESTE(constants.QueueNameOutDefault, int(fromTimeUnix), int(toTimeUnix))
+	resultFallback := api.readSingleSortedSetTESTE(constants.QueueNameOutFallback, int(fromTimeUnix), int(toTimeUnix))
+
+	summaryFinal := paymentSummary{
+		Default:  resultDefault,
+		Fallback: resultFallback,
 	}
 
-	if err := json.NewEncoder(w).Encode(jsonSummary); err != nil {
-		http.Error(w, "Erro ao renderizar json", http.StatusInternalServerError)
+	if err := json.NewEncoder(w).Encode(summaryFinal); err != nil {
+		http.Error(w, "Erro ao gerar json final", http.StatusInternalServerError)
 	}
-
-	w.WriteHeader(http.StatusOK)
 }
 
 func (api *Backend) readRedisList(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("Lendo dados da lista Redis")
 	items, err := api.redisClient.LRange(ctx, "payment-queue", 0, -1).Result()
 	if err != nil {
 		http.Error(w, "Erro ao ler itens da fila", http.StatusInternalServerError)
@@ -184,8 +194,45 @@ func (api *Backend) readSingleSortedSet(SetName string) totalPayment {
 	return paymentStruct
 }
 
+func (api *Backend) readSingleSortedSetTESTE(SetName string, min int, max int) totalPayment {
+	minStr := strconv.Itoa(min)
+	maxStr := strconv.Itoa(max)
+
+	result, err := api.redisClient.ZRevRangeByScore(ctx, SetName, &redis.ZRangeBy{
+		Min: minStr,
+		Max: maxStr,
+	}).Result()
+
+	if err != nil {
+		fmt.Printf("Falha ao ler resultado da Sorted Set %v\n", err)
+		return totalPayment{}
+	}
+
+	paymentBuf := paymentPool.Get().(*paymentResp)
+	var countValue float64
+
+	defer func() {
+		*paymentBuf = paymentResp{}
+		paymentPool.Put(paymentBuf)
+	}()
+
+	for _, resultStr := range result {
+		if err := json.Unmarshal([]byte(resultStr), &paymentBuf); err != nil {
+			fmt.Printf("Erro ao converter %v\n", err)
+			continue
+		} else {
+			countValue += paymentBuf.Amount
+		}
+	}
+	paymentStruct := totalPayment{
+		Requests: len(result),
+		Amount:   countValue,
+	}
+
+	return paymentStruct
+}
+
 func (api *Backend) readResultRedis(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("Lendo dados de resultado no Redis")
 	resultDefault := api.readSingleSortedSet(constants.QueueNameOutDefault)
 	resultFallback := api.readSingleSortedSet(constants.QueueNameOutFallback)
 
@@ -264,7 +311,7 @@ func main() {
 
 	router.HandleFunc("/read-redis", api.readRedisList)
 	router.HandleFunc("/payments", api.paymentEndpoint)
-	router.HandleFunc("/payments-summary", paymentSummaryEndpoint)
+	router.HandleFunc("/payments-summary", api.paymentSummaryEndpoint)
 	router.HandleFunc("/ping-redis", pingRedis(client))
 	router.HandleFunc("/result", api.readResultRedis)
 	router.HandleFunc("/dlq", api.readDLQ)

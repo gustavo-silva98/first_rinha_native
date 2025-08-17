@@ -41,27 +41,25 @@ func (checker *HealthChecker) CheckHealth() (string, error) {
 		return "", err
 	}
 
-	fmt.Println(jsonStatusDefault)
-	fmt.Println(jsonStatusFallback)
 	switch {
 	case jsonStatusDefault.Failing && !jsonStatusFallback.Failing:
-		fmt.Println("Ativou case 1")
+		//fmt.Println("Ativou case 1")
 		return checker.PaymentFallbackURL, nil
 
 	case jsonStatusFallback.Failing && !jsonStatusDefault.Failing:
-		fmt.Println("Ativou case 2")
+		//fmt.Println("Ativou case 2")
 		return checker.PaymentFallbackURL, nil
 
 	case jsonStatusDefault.MinResponseTime <= jsonStatusFallback.MinResponseTime:
-		fmt.Println("Ativou case 3")
+		//fmt.Println("Ativou case 3")
 		return checker.PaymentDefaultURL, nil
 
 	case jsonStatusFallback.MinResponseTime < jsonStatusDefault.MinResponseTime:
-		fmt.Println("Ativou case 4")
+		//fmt.Println("Ativou case 4")
 		return checker.PaymentFallbackURL, nil
 
 	default:
-		fmt.Println("Ativou case 5")
+		//fmt.Println("Ativou case 5")
 		return "", nil
 	}
 
@@ -123,7 +121,6 @@ func (checker *HealthChecker) StartHealthChecker() {
 			fmt.Printf("Erro ao Checar health %v\n", err)
 		}
 		checker.setCache(urlOK)
-		fmt.Printf("Salvando no REDIS a url: %v\n", urlOK)
 	}
 
 }
