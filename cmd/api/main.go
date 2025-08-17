@@ -59,8 +59,8 @@ func (api *Backend) paymentEndpoint(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	now := time.Now()
-	dateRequest := (now.Add(-time.Hour * 3)).Format(time.RFC3339)
+	now := time.Now().UTC()
+	dateRequest := now.Format(time.RFC3339Nano)
 
 	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
 	defer r.Body.Close()
