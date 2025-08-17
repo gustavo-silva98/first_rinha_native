@@ -59,8 +59,8 @@ func (api *Backend) paymentEndpoint(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	dateRequest := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now()
+	dateRequest := (now.Add(-time.Hour * 3)).Format(time.RFC3339)
 
 	r.Body = http.MaxBytesReader(w, r.Body, 10<<20)
 	defer r.Body.Close()
@@ -97,8 +97,6 @@ func (api *Backend) paymentEndpoint(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "Erro ao enfileirar payment", http.StatusInternalServerError)
 		return
-	} else {
-		fmt.Println("Payment enfileirado.")
 	}
 
 }
@@ -117,8 +115,6 @@ func (api *Backend) paymentSummaryEndpoint(w http.ResponseWriter, r *http.Reques
 	toTimeParsed, _ := time.Parse(time.RFC3339Nano, to)
 	fromTimeUnix := fromTimeParsed.Unix()
 	toTimeUnix := toTimeParsed.Unix()
-	fmt.Println("O FROM é ", from, " UNIX= ", fromTimeUnix)
-	fmt.Println("O To É ", to, "UNIX= ", toTimeUnix)
 
 	resultDefault := api.readSingleSortedSetTESTE(constants.QueueNameOutDefault, int(fromTimeUnix), int(toTimeUnix))
 	resultFallback := api.readSingleSortedSetTESTE(constants.QueueNameOutFallback, int(fromTimeUnix), int(toTimeUnix))
@@ -131,67 +127,6 @@ func (api *Backend) paymentSummaryEndpoint(w http.ResponseWriter, r *http.Reques
 	if err := json.NewEncoder(w).Encode(summaryFinal); err != nil {
 		http.Error(w, "Erro ao gerar json final", http.StatusInternalServerError)
 	}
-}
-
-func (api *Backend) readRedisList(w http.ResponseWriter, r *http.Request) {
-	items, err := api.redisClient.LRange(ctx, "payment-queue", 0, -1).Result()
-	if err != nil {
-		http.Error(w, "Erro ao ler itens da fila", http.StatusInternalServerError)
-		return
-	}
-
-	paymentsRedis := make([]paymentResp, 1000)
-	var countValue float64
-	var p paymentResp
-	for _, itemStr := range items {
-
-		if err := json.Unmarshal([]byte(itemStr), &p); err != nil {
-			log.Printf("Erro ao fazer unmarshal : %v ", err)
-			continue
-		}
-		countValue += p.Amount
-		paymentsRedis = append(paymentsRedis, p)
-	}
-
-	log.Printf("Soma das transações é: %v ", countValue)
-	if err := json.NewEncoder(w).Encode(paymentsRedis); err != nil {
-		http.Error(w, "Erro ao gerar json final", http.StatusInternalServerError)
-	}
-}
-
-func (api *Backend) readSingleSortedSet(SetName string) totalPayment {
-	result, err := api.redisClient.ZRevRangeByScore(ctx, SetName, &redis.ZRangeBy{
-		Min: "-Inf",
-		Max: "+Inf",
-	}).Result()
-
-	if err != nil {
-		fmt.Printf("Falha ao ler resultado da Sorted Set %v\n", err)
-		return totalPayment{}
-	}
-
-	paymentBuf := paymentPool.Get().(*paymentResp)
-	var countValue float64
-
-	defer func() {
-		*paymentBuf = paymentResp{}
-		paymentPool.Put(paymentBuf)
-	}()
-
-	for _, resultStr := range result {
-		if err := json.Unmarshal([]byte(resultStr), &paymentBuf); err != nil {
-			fmt.Printf("Erro ao converter %v\n", err)
-			continue
-		} else {
-			countValue += paymentBuf.Amount
-		}
-	}
-	paymentStruct := totalPayment{
-		Requests: len(result),
-		Amount:   countValue,
-	}
-
-	return paymentStruct
 }
 
 func (api *Backend) readSingleSortedSetTESTE(SetName string, min int, max int) totalPayment {
@@ -232,46 +167,6 @@ func (api *Backend) readSingleSortedSetTESTE(SetName string, min int, max int) t
 	return paymentStruct
 }
 
-func (api *Backend) readResultRedis(w http.ResponseWriter, r *http.Request) {
-	resultDefault := api.readSingleSortedSet(constants.QueueNameOutDefault)
-	resultFallback := api.readSingleSortedSet(constants.QueueNameOutFallback)
-
-	summaryFinal := paymentSummary{
-		Default:  resultDefault,
-		Fallback: resultFallback,
-	}
-
-	if err := json.NewEncoder(w).Encode(summaryFinal); err != nil {
-		http.Error(w, "Erro ao gerar json final", http.StatusInternalServerError)
-	}
-}
-
-func (api *Backend) readDLQ(w http.ResponseWriter, r *http.Request) {
-	result, err := api.redisClient.ZRevRangeByScore(ctx, constants.DLQ, &redis.ZRangeBy{
-		Min: "-Inf",
-		Max: "+Inf",
-	}).Result()
-
-	if err != nil {
-		fmt.Printf("Falha ao ler resultado da Sorted Set %v\n", err)
-	}
-	json.NewEncoder(w).Encode(result)
-
-}
-
-func pingRedis(rdb *redis.Client) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		ctx := context.Background()
-
-		pong, err := rdb.Ping(ctx).Result()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		json.NewEncoder(w).Encode(pong)
-	}
-}
-
 func registerPprof(mux *http.ServeMux) {
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
@@ -309,12 +204,8 @@ func main() {
 		panic(err)
 	}
 
-	router.HandleFunc("/read-redis", api.readRedisList)
 	router.HandleFunc("/payments", api.paymentEndpoint)
 	router.HandleFunc("/payments-summary", api.paymentSummaryEndpoint)
-	router.HandleFunc("/ping-redis", pingRedis(client))
-	router.HandleFunc("/result", api.readResultRedis)
-	router.HandleFunc("/dlq", api.readDLQ)
 
 	server := &http.Server{
 		Addr:         ":" + port,

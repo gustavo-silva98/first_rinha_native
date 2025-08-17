@@ -101,23 +101,22 @@ func (wrk *Worker) processPayment(job paymentRespCounter, correlationID string) 
 			return
 		}
 
-		fmt.Printf("Lido URL Redis: %v\n", urlOk)
 		if postPayment := wrk.paymentPost(urlOk, jobJson); postPayment {
 			if urlOk == wrk.PaymentDefaultURL {
 				wrk.redisClient.Client.ZAdd(ctx, wrk.queueNameOutDefault, redis.Z{
 					Score:  float64(score_unix),
 					Member: jobJson,
 				})
-				fmt.Printf("Colocado no HSET %v\n ", wrk.queueNameOutDefault)
-				fmt.Printf("Job processado. ID: %v - CorrId: %v | ReqAt: %v | Amount: %v", wrk.Id, job.CorrelationID, job.RequestDate, job.Amount)
+				//fmt.Printf("Colocado no HSET %v\n ", wrk.queueNameOutDefault)
+				//fmt.Printf("Job processado. ID: %v - CorrId: %v | ReqAt: %v | Amount: %v", wrk.Id, job.CorrelationID, job.RequestDate, job.Amount)
 
 			} else {
 				wrk.redisClient.Client.ZAdd(ctx, wrk.queueNameOutFallback, redis.Z{
 					Score:  float64(score_unix),
 					Member: jobJson,
 				})
-				fmt.Printf("Colocado no HSET %v\n ", wrk.queueNameOutFallback)
-				fmt.Printf("Job processado. ID: %v - CorrId: %v | ReqAt: %v | Amount: %v", wrk.Id, job.CorrelationID, job.RequestDate, job.Amount)
+				//fmt.Printf("Colocado no HSET %v\n ", wrk.queueNameOutFallback)
+				//fmt.Printf("Job processado. ID: %v - CorrId: %v | ReqAt: %v | Amount: %v", wrk.Id, job.CorrelationID, job.RequestDate, job.Amount)
 			}
 
 		} else {
@@ -141,8 +140,8 @@ func (wrk *Worker) processPayment(job paymentRespCounter, correlationID string) 
 					Member: correlationID,
 				})
 
-				fmt.Printf("Colocado no HSET %v - counter : %v\n ", wrk.queueNameRetry, job.Counter)
-				fmt.Printf("Job processado. ID: %v - CorrId: %v | ReqAt: %v | Amount: %v", wrk.Id, job.CorrelationID, job.RequestDate, job.Amount)
+				//log.Printf("Colocado no HSET %v - counter : %v\n ", wrk.queueNameRetry, job.Counter)
+				//log.Printf("Job processado. ID: %v - CorrId: %v | ReqAt: %v | Amount: %v", wrk.Id, job.CorrelationID, job.RequestDate, job.Amount)
 			}
 		}
 
@@ -206,9 +205,9 @@ func (wrk *Worker) paymentPost(url string, job []byte) bool {
 }
 
 func main() {
-	fmt.Println("Subindo o Worker ")
+	fmt.Println("Subindo os Workers ")
 
-	for i := 0; i < 15; i++ {
+	for i := 0; i < 35; i++ {
 		workerObjIN := &Worker{
 			Id:                   i,
 			redisClient:          repository.RedisClientSingleton,
