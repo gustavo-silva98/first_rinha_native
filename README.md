@@ -13,7 +13,12 @@ Esta é a minha implementação para a  Rinha de Backend 2025 usando a stdlib ne
 
 ---
 
-### Repositório com o Código-Fonte
+## 🚀 Como rodar
 
-O código-fonte completo desta submissão está disponível em:
-[https://github.com/gustavo-silva98/first_rinha_native](https://github.com/gustavo-silva98/first_rinha_native)
+Certifique-se de ter o **Docker** e o **Docker Compose** instalados.
+
+```bash
+git clone https://github.com/gustavo-silva98/first_rinha_native.git
+cd first_rinha_native
+docker compose up --build
+```
